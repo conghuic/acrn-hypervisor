@@ -464,8 +464,9 @@ blockif_open(const char *optstr, const char *ident)
 	struct stat sbuf;
 	/* struct diocgattr_arg arg; */
 	off_t size, psectsz, psectoff;
-	int extra, fd, i, sectsz;
-	int nocache, sync, ro, candelete, geom, ssopt, pssopt;
+	int fd, i, sectsz;
+	uint32_t extra;
+	int nodirect, nosync, ro, candelete, geom, ssopt, pssopt;
 	long sz;
 	long long b;
 	int err_code = -1;
@@ -476,8 +477,8 @@ blockif_open(const char *optstr, const char *ident)
 
 	fd = -1;
 	ssopt = 0;
-	nocache = 0;
-	sync = 0;
+	nodirect = 0;
+	nosync = 0;
 	ro = 0;
 	sub_file_assign = 0;
 
@@ -494,10 +495,10 @@ blockif_open(const char *optstr, const char *ident)
 		cp = strsep(&xopts, ",");
 		if (cp == nopt)		/* file or device pathname */
 			continue;
-		else if (!strcmp(cp, "nocache"))
-			nocache = 1;
-		else if (!strcmp(cp, "sync") || !strcmp(cp, "direct"))
-			sync = 1;
+		else if (!strcmp(cp, "nodirect"))
+			nodirect = 1;
+		else if (!strcmp(cp, "nosync"))
+			nosync = 1;
 		else if (!strcmp(cp, "ro"))
 			ro = 1;
 		else if (sscanf(cp, "sectorsize=%d/%d", &ssopt, &pssopt) == 2)
@@ -513,14 +514,12 @@ blockif_open(const char *optstr, const char *ident)
 		}
 	}
 
-	/* enforce a write-through policy by default */
-	nocache = 1;
-	sync = 1;
-
 	extra = 0;
-	if (nocache)
+
+	/* Use write-through and sync policy by default */
+	if (!nodirect)
 		extra |= O_DIRECT;
-	if (sync)
+	if (!nosync)
 		extra |= O_SYNC;
 
 	fd = open(nopt, (ro ? O_RDONLY : O_RDWR) | extra);
