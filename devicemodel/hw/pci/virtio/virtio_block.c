@@ -53,6 +53,8 @@
 #define	VIRTIO_BLK_F_BLK_SIZE	(1 << 6)	/* cfg block size valid */
 #define	VIRTIO_BLK_F_FLUSH	(1 << 9)	/* Cache flush support */
 #define	VIRTIO_BLK_F_TOPOLOGY	(1 << 10)	/* Optimal I/O alignment */
+#define	VIRTIO_BLK_F_CONFIG_WCE (1 << 11)	/* write back mode available*/
+#define	VIRTIO_BLK_F_WCE VIRTIO_BLK_F_FLUSH	/* Old name for VIRTIO_BLK_F_FLUSH*/
 
 /*
  * Host capabilities
@@ -62,6 +64,7 @@
 	VIRTIO_BLK_F_BLK_SIZE |						    \
 	VIRTIO_BLK_F_FLUSH    |						    \
 	VIRTIO_BLK_F_TOPOLOGY |						    \
+	VIRTIO_BLK_F_CONFIG_WCE |					    \
 	VIRTIO_RING_F_INDIRECT_DESC)	/* indirect descriptors */
 
 /*
@@ -367,7 +370,7 @@ virtio_blk_init(struct vmctx *ctx, struct pci_vdev *dev, char *opts)
 	    (sto != 0) ? ((sts - sto) / sectsz) : 0;
 	blk->cfg.topology.min_io_size = 0;
 	blk->cfg.topology.opt_io_size = 0;
-	blk->cfg.writeback = 0;
+	blk->cfg.writeback = blockif_get_wce(blk->bc);
 
 	/*
 	 * Should we move some of this into virtio.c?  Could
@@ -399,6 +402,7 @@ virtio_blk_deinit(struct vmctx *ctx, struct pci_vdev *dev, char *opts)
 		DPRINTF(("virtio_blk: deinit\n"));
 		blk = (struct virtio_blk *) dev->arg;
 		bctxt = blk->bc;
+		blockif_flush_all(bctxt);
 		blockif_close(bctxt);
 		free(blk);
 	}
@@ -407,8 +411,20 @@ virtio_blk_deinit(struct vmctx *ctx, struct pci_vdev *dev, char *opts)
 static int
 virtio_blk_cfgwrite(void *vdev, int offset, int size, uint32_t value)
 {
-	DPRINTF(("virtio_blk: write to readonly reg %d\n\r", offset));
-	return -1;
+	struct virtio_blk *blk = vdev;
+	struct virtio_blk_config *blkcfg = &(blk->cfg);
+	void *ptr;
+
+	ptr = (uint8_t *)blkcfg + offset;
+
+	if (offset == offsetof(struct virtio_blk_config, writeback)) {
+		memcpy(ptr, &value, size);
+		blockif_set_wce(blk->bc, blkcfg->writeback);
+		return 0;
+	} else {
+		DPRINTF(("virtio_blk: write to readonly reg %d\n\r", offset));
+		return -1;
+	}
 }
 
 static int

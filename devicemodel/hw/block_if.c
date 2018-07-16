@@ -109,6 +109,7 @@ struct blockif_ctxt {
 	int			psectsz;
 	int			psectoff;
 	int			closing;
+	uint8_t			enable_write_cache;
 	pthread_t		btid[BLOCKIF_NUMTHR];
 	pthread_mutex_t		mtx;
 	pthread_cond_t		cond;
@@ -277,7 +278,7 @@ blockif_proc(struct blockif_ctxt *bc, struct blockif_elem *be, uint8_t *buf)
 				err = errno;
 			else
 				br->resid -= len;
-			break;
+			goto flushcache;
 		}
 		i = 0;
 		off = voff = 0;
@@ -304,6 +305,10 @@ blockif_proc(struct blockif_ctxt *bc, struct blockif_elem *be, uint8_t *buf)
 			}
 			off += len;
 			br->resid -= len;
+		}
+flushcache:	if (!bc->enable_write_cache) {
+			if (fsync(bc->fd))
+				err =errno;
 		}
 		break;
 	case BOP_FLUSH:
@@ -465,7 +470,7 @@ blockif_open(const char *optstr, const char *ident)
 	/* struct diocgattr_arg arg; */
 	off_t size, psectsz, psectoff;
 	int extra, fd, i, sectsz;
-	int nocache, sync, ro, candelete, geom, ssopt, pssopt;
+	int nocache, writeback, ro, candelete, geom, ssopt, pssopt;
 	long sz;
 	long long b;
 	int err_code = -1;
@@ -477,9 +482,11 @@ blockif_open(const char *optstr, const char *ident)
 	fd = -1;
 	ssopt = 0;
 	nocache = 0;
-	sync = 0;
 	ro = 0;
 	sub_file_assign = 0;
+
+	/*write thru is on by default*/
+	writeback = 0;
 
 	/*
 	 * The first element in the optstring is always a pathname.
@@ -494,10 +501,22 @@ blockif_open(const char *optstr, const char *ident)
 		cp = strsep(&xopts, ",");
 		if (cp == nopt)		/* file or device pathname */
 			continue;
-		else if (!strcmp(cp, "nocache"))
+		else if (!strcmp(cp, "bypass")) {
 			nocache = 1;
-		else if (!strcmp(cp, "sync") || !strcmp(cp, "direct"))
-			sync = 1;
+			writeback = 1;
+		}
+		else if (!strcmp(cp, "safe")) {
+			nocache = 1;
+			writeback = 0;
+		}
+		else if (!strcmp(cp, "writeback")) {
+			nocache = 0;
+			writeback = 1;
+		}
+		else if (!strcmp(cp, "writethru")) {
+			nocache = 0;
+			writeback = 0;
+		}
 		else if (!strcmp(cp, "ro"))
 			ro = 1;
 		else if (sscanf(cp, "sectorsize=%d/%d", &ssopt, &pssopt) == 2)
@@ -513,15 +532,9 @@ blockif_open(const char *optstr, const char *ident)
 		}
 	}
 
-	/* enforce a write-through policy by default */
-	nocache = 1;
-	sync = 1;
-
 	extra = 0;
 	if (nocache)
 		extra |= O_DIRECT;
-	if (sync)
-		extra |= O_SYNC;
 
 	fd = open(nopt, (ro ? O_RDONLY : O_RDWR) | extra);
 	if (fd < 0 && !ro) {
@@ -619,6 +632,8 @@ blockif_open(const char *optstr, const char *ident)
 		goto err;
 	}
 
+	memset(bc, 0, sizeof(struct blockif_ctxt));
+
 	if (sub_file_assign) {
 		DPRINTF(("sector size is %d\n", sectsz));
 		bc->sub_file_assign = 1;
@@ -648,6 +663,7 @@ blockif_open(const char *optstr, const char *ident)
 	bc->sectsz = sectsz;
 	bc->psectsz = psectsz;
 	bc->psectoff = psectoff;
+	bc->enable_write_cache = writeback;
 	pthread_mutex_init(&bc->mtx, NULL);
 	pthread_cond_init(&bc->cond, NULL);
 	TAILQ_INIT(&bc->freeq);
@@ -930,4 +946,29 @@ blockif_candelete(struct blockif_ctxt *bc)
 {
 	assert(bc->magic == BLOCKIF_SIG);
 	return bc->candelete;
+}
+
+/*Get write cache enable config*/
+uint8_t
+blockif_get_wce(struct blockif_ctxt *bc)
+{
+	assert(bc->magic == BLOCKIF_SIG);
+	return bc->enable_write_cache;
+}
+
+/*Set write cache enable config*/
+void
+blockif_set_wce(struct blockif_ctxt *bc, uint8_t wce)
+{
+	assert(bc->magic == BLOCKIF_SIG);
+	pthread_mutex_lock(&bc->mtx);
+	bc->enable_write_cache = wce;
+	pthread_mutex_unlock(&bc->mtx);
+}
+
+void blockif_flush_all(struct blockif_ctxt *bc)
+{
+	assert(bc->magic == BLOCKIF_SIG);
+	if (bc->fd)
+		fsync(bc->fd);
 }
